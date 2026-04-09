@@ -101,6 +101,7 @@ func Stop() {
 
 func Push(fn func(), delay time.Duration, runOnMain bool) {
 	mu.Lock()
+	defer mu.Unlock()
 	if !running {
 		Start()
 	}
@@ -111,13 +112,15 @@ func Push(fn func(), delay time.Duration, runOnMain bool) {
 	}
 	tasks = append(tasks, &DTask{fn: fn, delay: delay, runOnMain: runOnMain})
 	cond.Signal()
-	mu.Unlock()
 }
 
 func PushFront(fn func(), runOnMain bool) {
-	Push(fn, 0, runOnMain)
-}
-
-func PushBack(fn func(), delay time.Duration, runOnMain bool) {
-	Push(fn, delay, runOnMain)
+	mu.Lock()
+	defer mu.Unlock()
+	if !running {
+		Start()
+	}
+	task := &DTask{fn: fn, delay: 0, runOnMain: runOnMain}
+	tasks = append([]*DTask{task}, tasks...)
+	cond.Signal()
 }
