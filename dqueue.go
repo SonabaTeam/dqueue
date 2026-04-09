@@ -21,6 +21,9 @@ var (
 )
 
 func Start() {
+	if running {
+		return
+	}
 	tasks = []*DTask{}
 	mainQueue = make(chan func(), 100)
 	cond = sync.NewCond(&mu)
