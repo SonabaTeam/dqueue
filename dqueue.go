@@ -34,56 +34,62 @@ func Start() {
 	}
 	running = true
 	mu.Unlock()
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for {
-			mu.Lock()
-			for len(tasks) == 0 && running {
-				cond.Wait()
-			}
-			if !running && len(tasks) == 0 {
-				mu.Unlock()
-				return
-			}
-			if len(tasks) == 0 {
-				mu.Unlock()
-				continue
-			}
-			task := tasks[0]
-			tasks = tasks[1:]
-			mu.Unlock()
-			if task.delay > 0 {
-				time.Sleep(task.delay)
-			}
-			if task.runOnMain {
-				select {
-				case mainQueue <- task.fn:
-				default:
+	taskWorkers := 4
+	mainWorkers := 2
+	for i := 0; i < taskWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				mu.Lock()
+				for len(tasks) == 0 && running {
+					cond.Wait()
 				}
-			} else {
-				go task.fn()
-			}
-		}
-	}()
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for {
-			mu.Lock()
-			if !running && len(mainQueue) == 0 {
+				if !running && len(tasks) == 0 {
+					mu.Unlock()
+					return
+				}
+				if len(tasks) == 0 {
+					mu.Unlock()
+					continue
+				}
+				task := tasks[0]
+				tasks = tasks[1:]
 				mu.Unlock()
-				return
+				if task.delay > 0 {
+					time.Sleep(task.delay)
+				}
+				if task.runOnMain {
+					select {
+					case mainQueue <- task.fn:
+					default:
+					}
+				} else {
+					go task.fn()
+				}
 			}
-			mu.Unlock()
-			select {
-			case fn := <-mainQueue:
-				fn()
-			default:
-				time.Sleep(1 * time.Millisecond)
+		}()
+	}
+	for i := 0; i < mainWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				mu.Lock()
+				if !running && len(mainQueue) == 0 {
+					mu.Unlock()
+					return
+				}
+				mu.Unlock()
+				select {
+				case fn := <-mainQueue:
+					fn()
+				default:
+					time.Sleep(1 * time.Millisecond)
+				}
 			}
-		}
-	}()
+		}()
+	}
 }
 
 func Stop() {
