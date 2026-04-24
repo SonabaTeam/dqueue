@@ -89,7 +89,7 @@ func Push(fn func(), delay time.Duration) {
 	cond.Signal()
 }
 
-func PushFront(fn func(), delay time.Duration) {
+func PushFront(fn func()) {
 	mu.Lock()
 	if !running {
 		mu.Unlock()
@@ -98,7 +98,7 @@ func PushFront(fn func(), delay time.Duration) {
 	}
 	task := &DQueue{
 		fn:    fn,
-		delay: delay,
+		delay: 0,
 	}
 	queues = append([]*DQueue{task}, queues...)
 	mu.Unlock()
