@@ -5,27 +5,24 @@ import (
 	"time"
 )
 
-type DTask struct {
-	fn        func()
-	delay     time.Duration
-	runOnMain bool
+type DQueue struct {
+	fn    func()
+	delay time.Duration
 }
 
 var (
-	tasks     []*DTask
-	mu        sync.Mutex
-	cond      *sync.Cond
-	mainQueue chan func()
-	running   bool
-	wg        sync.WaitGroup
+	queues  []*DQueue
+	mu      sync.Mutex
+	cond    *sync.Cond
+	running bool
+	wg      sync.WaitGroup
 )
 
 func Start() {
 	if running {
 		return
 	}
-	tasks = []*DTask{}
-	mainQueue = make(chan func(), 100)
+	queues = make([]*DQueue, 100)
 	cond = sync.NewCond(&mu)
 	mu.Lock()
 	if running {
@@ -34,59 +31,31 @@ func Start() {
 	}
 	running = true
 	mu.Unlock()
-	taskWorkers := 4
-	mainWorkers := 2
-	for i := 0; i < taskWorkers; i++ {
+	workers := 4
+	for i := 0; i < workers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for {
 				mu.Lock()
-				for len(tasks) == 0 && running {
+				for len(queues) == 0 && running {
 					cond.Wait()
 				}
-				if !running && len(tasks) == 0 {
+				if !running && len(queues) == 0 {
 					mu.Unlock()
 					return
 				}
-				if len(tasks) == 0 {
+				if len(queues) == 0 {
 					mu.Unlock()
 					continue
 				}
-				task := tasks[0]
-				tasks = tasks[1:]
+				queue := queues[0]
+				queues = queues[1:]
 				mu.Unlock()
-				if task.delay > 0 {
-					time.Sleep(task.delay)
+				if queue.delay > 0 {
+					time.Sleep(queue.delay)
 				}
-				if task.runOnMain {
-					select {
-					case mainQueue <- task.fn:
-					default:
-					}
-				} else {
-					go task.fn()
-				}
-			}
-		}()
-	}
-	for i := 0; i < mainWorkers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for {
-				mu.Lock()
-				if !running && len(mainQueue) == 0 {
-					mu.Unlock()
-					return
-				}
-				mu.Unlock()
-				select {
-				case fn := <-mainQueue:
-					fn()
-				default:
-					time.Sleep(1 * time.Millisecond)
-				}
+				queue.fn()
 			}
 		}()
 	}
@@ -105,28 +74,33 @@ func Stop() {
 	wg.Wait()
 }
 
-func Push(fn func(), delay time.Duration, runOnMain bool) {
+func Push(fn func(), delay time.Duration) {
 	mu.Lock()
-	defer mu.Unlock()
 	if !running {
-		Start()
-	}
-	if !running {
-		tasks = append(tasks, &DTask{fn: fn, delay: delay, runOnMain: runOnMain})
 		mu.Unlock()
-		return
+		Start()
+		mu.Lock()
 	}
-	tasks = append(tasks, &DTask{fn: fn, delay: delay, runOnMain: runOnMain})
+	queues = append(queues, &DQueue{
+		fn:    fn,
+		delay: delay,
+	})
+	mu.Unlock()
 	cond.Signal()
 }
 
-func PushFront(fn func(), runOnMain bool) {
+func PushFront(fn func(), delay time.Duration) {
 	mu.Lock()
-	defer mu.Unlock()
 	if !running {
+		mu.Unlock()
 		Start()
+		mu.Lock()
 	}
-	task := &DTask{fn: fn, delay: 0, runOnMain: runOnMain}
-	tasks = append([]*DTask{task}, tasks...)
+	task := &DQueue{
+		fn:    fn,
+		delay: delay,
+	}
+	queues = append([]*DQueue{task}, queues...)
+	mu.Unlock()
 	cond.Signal()
 }
