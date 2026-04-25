@@ -2,6 +2,7 @@ package dqueue
 
 import (
 	"container/heap"
+	"runtime"
 	"sync"
 	"time"
 )
@@ -9,6 +10,7 @@ import (
 type task struct {
 	fn    func()
 	runAt time.Time
+	seq   int
 	index int
 }
 
@@ -17,6 +19,9 @@ type taskHeap []*task
 func (h taskHeap) Len() int { return len(h) }
 
 func (h taskHeap) Less(i, j int) bool {
+	if h[i].runAt.Equal(h[j].runAt) {
+		return h[i].seq < h[j].seq
+	}
 	return h[i].runAt.Before(h[j].runAt)
 }
 
@@ -48,10 +53,9 @@ var (
 	heapQ taskHeap
 	ready chan *task
 
-	running bool
-	wg      sync.WaitGroup
-
-	workers = 4
+	seqCounter int
+	running    bool
+	wg         sync.WaitGroup
 )
 
 func Start() {
@@ -63,10 +67,12 @@ func Start() {
 	running = true
 	heap.Init(&heapQ)
 	ready = make(chan *task, 1024)
+	seqCounter = 0
 	mu.Unlock()
 	wg.Add(1)
+	go normalizeSeq()
 	go scheduler()
-	for i := 0; i < workers; i++ {
+	for i := 0; i < runtime.NumCPU(); i++ {
 		wg.Add(1)
 		go worker()
 	}
@@ -84,6 +90,31 @@ func Stop() {
 	close(ready)
 	mu.Unlock()
 	wg.Wait()
+}
+
+func normalizeSeq() {
+	ticker := time.NewTicker(6 * time.Hour)
+	defer ticker.Stop()
+	for range ticker.C {
+		mu.Lock()
+		func() {
+			if len(heapQ) == 0 {
+				seqCounter = 0
+				return
+			}
+			minSeq := heapQ[0].seq
+			for _, t := range heapQ {
+				if t.seq < minSeq {
+					minSeq = t.seq
+				}
+			}
+			for _, t := range heapQ {
+				t.seq -= minSeq
+			}
+			seqCounter -= minSeq
+		}()
+		mu.Unlock()
+	}
 }
 
 func scheduler() {
@@ -125,9 +156,11 @@ func Push(fn func(), delay time.Duration) {
 		running = true
 		heap.Init(&heapQ)
 	}
+	seqCounter++
 	heap.Push(&heapQ, &task{
 		fn:    fn,
 		runAt: time.Now().Add(delay),
+		seq:   seqCounter,
 	})
 	cond.Signal()
 }
@@ -135,8 +168,14 @@ func Push(fn func(), delay time.Duration) {
 func PushFront(fn func()) {
 	mu.Lock()
 	defer mu.Unlock()
+	if !running {
+		running = true
+		heap.Init(&heapQ)
+	}
+	seqCounter--
 	heap.Push(&heapQ, &task{
 		fn:    fn,
+		seq:   seqCounter,
 		runAt: time.Now(),
 	})
 	cond.Signal()
