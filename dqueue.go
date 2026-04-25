@@ -91,10 +91,57 @@ func Stop() {
 	}
 	mu.Unlock()
 	wg.Wait()
-	mu.Lock()
-	heapQ = nil
-	close(ready)
-	mu.Unlock()
+}
+
+func scheduler() {
+	defer wg.Done()
+	timer := time.NewTimer(time.Hour)
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+	for {
+		mu.Lock()
+		for len(heapQ) == 0 && running {
+			cond.Wait()
+		}
+		if !running {
+			mu.Unlock()
+			close(ready)
+			return
+		}
+		now := time.Now()
+		task := heapQ[0]
+		if task.runAt.After(now) {
+			wait := time.Until(task.runAt)
+			timer.Reset(wait)
+			mu.Unlock()
+			select {
+			case <-timer.C:
+			case <-wakeup:
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+			}
+			continue
+		}
+		heap.Pop(&heapQ)
+		mu.Unlock()
+		ready <- task
+	}
+}
+func worker() {
+	defer wg.Done()
+	for task := range ready {
+		if task != nil && task.fn != nil {
+			task.fn()
+		}
+	}
 }
 
 func normalizeSeq() {
@@ -128,57 +175,6 @@ func normalizeSeq() {
 				return
 			}
 			mu.Unlock()
-		}
-	}
-}
-
-func scheduler() {
-	defer wg.Done()
-	timer := time.NewTimer(time.Hour)
-	if !timer.Stop() {
-		<-timer.C
-	}
-	for {
-		mu.Lock()
-		for len(heapQ) == 0 && running {
-			cond.Wait()
-		}
-		if !running {
-			mu.Unlock()
-			return
-		}
-		now := time.Now()
-		t := heapQ[0]
-		if t.runAt.After(now) {
-			wait := time.Until(t.runAt)
-			timer.Reset(wait)
-			mu.Unlock()
-			select {
-			case <-timer.C:
-			case <-wakeup:
-				if !timer.Stop() {
-					select {
-					case <-timer.C:
-					default:
-					}
-				}
-			}
-			continue
-		}
-		heap.Pop(&heapQ)
-		mu.Unlock()
-		select {
-		case ready <- t:
-		case <-time.After(100 * time.Millisecond):
-		}
-	}
-}
-
-func worker() {
-	defer wg.Done()
-	for task := range ready {
-		if task != nil && task.fn != nil {
-			task.fn()
 		}
 	}
 }
